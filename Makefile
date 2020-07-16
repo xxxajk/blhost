@@ -37,9 +37,20 @@ INCLUDES += $(BOOT_ROOT)/src \
 			$(BOOT_ROOT)/include/driver \
 			$(BOOT_ROOT)/include/bm_usb
 
+
+LBITS := $(shell getconf LONG_BIT)
+ifeq ($(LBITS),64)
+CXXFLAGS := -D LINUX -D BOOTLOADER_HOST -std=c++0x -m32
+CFLAGS   := -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE -m32
+LD       := g++ -m32
+CXXFLAGS64 := -D LINUX -D BOOTLOADER_HOST -std=c++0x
+CFLAGS64   := -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE
+LD64       := g++
+else
 CXXFLAGS := -D LINUX -D BOOTLOADER_HOST -std=c++0x
 CFLAGS   := -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE
-LD       := g++
+LD       := g++      
+endif
 
 SOURCES := $(BOOT_ROOT)/src/blhost.cpp \
 		   $(BOOT_ROOT)/src/blfwk/Blob.cpp \
@@ -83,6 +94,9 @@ INCLUDES := $(foreach includes, $(INCLUDES), -I $(includes))
 
 ifeq "$(build)" "debug"
 DEBUG_OR_RELEASE := Debug
+CFLAGS64 += -g
+CXXFLAGS64 += -g
+LDFLAGS64 += -g
 CFLAGS += -g
 CXXFLAGS += -g
 LDFLAGS += -g
@@ -90,10 +104,18 @@ else
 DEBUG_OR_RELEASE := Release
 endif
 
+ifeq ($(LBITS),64)
+TARGET_OUTPUT_ROOT := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)-32bit
+MAKE_TARGET := $(TARGET_OUTPUT_ROOT)/$(APP_NAME)
+OBJS_ROOT = $(TARGET_OUTPUT_ROOT)/obj
+TARGET_OUTPUT_ROOT64 := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)-64bit
+MAKE_TARGET64 := $(TARGET_OUTPUT_ROOT64)/$(APP_NAME)
+OBJS_ROOT64= $(TARGET_OUTPUT_ROOT64)/obj
+else
 TARGET_OUTPUT_ROOT := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)
 MAKE_TARGET := $(TARGET_OUTPUT_ROOT)/$(APP_NAME)
-
 OBJS_ROOT = $(TARGET_OUTPUT_ROOT)/obj
+endif
 
 # Strip sources.
 SOURCES := $(strip $(SOURCES))
@@ -106,6 +128,9 @@ SOURCES_REL := $(subst $(BOOT_ROOT)/,,$(SOURCES_ABS))
 SOURCE_DIRS_ABS := $(sort $(foreach f,$(SOURCES_ABS),$(dir $(f))))
 SOURCE_DIRS_REL := $(subst $(BOOT_ROOT)/,,$(SOURCE_DIRS_ABS))
 
+ifeq ($(LBITS),64)
+OBJECTS_DIRS64 := $(addprefix $(OBJS_ROOT64)/,$(SOURCE_DIRS_REL))
+endif
 OBJECTS_DIRS := $(addprefix $(OBJS_ROOT)/,$(SOURCE_DIRS_REL))
 
 # Filter source files list into separate source types.
@@ -115,12 +140,21 @@ ASM_s_SOURCES = $(filter %.s,$(SOURCES_REL))
 ASM_S_SOURCES = $(filter %.S,$(SOURCES_REL))
 
 # Convert sources to objects.
+ifeq ($(LBITS),64)
+OBJECTS_C64 := $(addprefix $(OBJS_ROOT64)/,$(C_SOURCES:.c=.o))
+OBJECTS_CXX64 := $(addprefix $(OBJS_ROOT64)/,$(CXX_SOURCES:.cpp=.o))
+OBJECTS_ASM64 := $(addprefix $(OBJS_ROOT64)/,$(ASM_s_SOURCES:.s=.o))
+OBJECTS_ASM_S64 := $(addprefix $(OBJS_ROOT64)/,$(ASM_S_SOURCES:.S=.o))
+endif
 OBJECTS_C := $(addprefix $(OBJS_ROOT)/,$(C_SOURCES:.c=.o))
 OBJECTS_CXX := $(addprefix $(OBJS_ROOT)/,$(CXX_SOURCES:.cpp=.o))
 OBJECTS_ASM := $(addprefix $(OBJS_ROOT)/,$(ASM_s_SOURCES:.s=.o))
 OBJECTS_ASM_S := $(addprefix $(OBJS_ROOT)/,$(ASM_S_SOURCES:.S=.o))
 
 # Complete list of all object files.
+ifeq ($(LBITS),64)
+OBJECTS_ALL64 := $(sort $(OBJECTS_C64) $(OBJECTS_CXX64) $(OBJECTS_ASM64) $(OBJECTS_ASM_S64))
+endif
 OBJECTS_ALL := $(sort $(OBJECTS_C) $(OBJECTS_CXX) $(OBJECTS_ASM) $(OBJECTS_ASM_S))
 
 #-------------------------------------------------------------------------------
@@ -132,10 +166,10 @@ OBJECTS_ALL := $(sort $(OBJECTS_C) $(OBJECTS_CXX) $(OBJECTS_ASM) $(OBJECTS_ASM_S
 # if subdirs modified the library file after local files were compiled but before they were added
 # to the library.
 .PHONY: all
-all: $(MAKE_TARGET)
+all: $(MAKE_TARGET) $(MAKE_TARGET64)
 
 ## Recipe to create the output object file directories.
-$(OBJECTS_DIRS) :
+$(OBJECTS_DIRS) $(OBJECTS_DIRS64):
 	$(at)mkdir -p $@
 
 # Object files depend on the directories where they will be created.
@@ -143,7 +177,8 @@ $(OBJECTS_DIRS) :
 # The dirs are made order-only prerequisites (by being listed after the '|') so they won't cause
 # the objects to be rebuilt, as the modification date on a directory changes whenver its contents
 # change. This would cause the objects to always be rebuilt if the dirs were normal prerequisites.
-$(OBJECTS_ALL): | $(OBJECTS_DIRS)
+
+$(OBJECTS_ALL) $(OBJECTS_ALL64): | $(OBJECTS_DIRS) $(OBJECTS_DIRS64)
 
 #-------------------------------------------------------------------------------
 # Pattern rules for compilation
@@ -156,6 +191,29 @@ $(OBJECTS_ALL): | $(OBJECTS_DIRS)
 # If system headers are included, there are path problems on cygwin. The -MP option creates empty
 # targets for each header file so that a rebuild will be forced if the file goes missing, but
 # no error will occur.
+ifeq ($(LBITS),64)
+# Compile C sources.
+$(OBJS_ROOT64)/%.o: $(BOOT_ROOT)/%.c
+	@$(call printmessage,c,Compiling, $(subst $(BOOT_ROOT)/,,$<))
+	$(at)$(CC) $(CFLAGS64) $(SYSTEM_INC) $(INCLUDES) $(DEFINES) -MMD -MF $(basename $@).d -MP -o $@ -c $<
+
+# Compile C++ sources.
+$(OBJS_ROOT64)/%.o: $(BOOT_ROOT)/%.cpp
+	@$(call printmessage,cxx,Compiling, $(subst $(BOOT_ROOT)/,,$<))
+	$(at)$(CXX) $(CXXFLAGS64) $(SYSTEM_INC) $(INCLUDES) $(DEFINES) -MMD -MF $(basename $@).d -MP -o $@ -c $<
+
+# For .S assembly files, first run through the C preprocessor then assemble.
+$(OBJS_ROOT64)/%.o: $(BOOT_ROOT)/%.S
+	@$(call printmessage,asm,Assembling, $(subst $(BOOT_ROOT)/,,$<))
+	$(at)$(CPP) -D__LANGUAGE_ASM__ $(INCLUDES) $(DEFINES) -o $(basename $@).s $< \
+	&& $(AS) $(ASFLAGS64) $(INCLUDES) -MD $(OBJS_ROOT64)/$*.d -o $@ $(basename $@).s
+
+# Assembler sources.
+$(OBJS_ROOT64)/%.o: $(BOOT_ROOT)/%.s
+	@$(call printmessage,asm,Assembling, $(subst $(BOOT_ROOT)/,,$<))
+	$(at)$(AS) $(ASFLAGS64) $(INCLUDES) -MD $(basename $@).d -o $@ $<
+
+endif
 
 # Compile C sources.
 $(OBJS_ROOT)/%.o: $(BOOT_ROOT)/%.c
@@ -193,13 +251,23 @@ $(MAKE_TARGET): $(OBJECTS_ALL)
           -o $@
 	@echo "Output binary:" ; echo "  $(APP_NAME)"
 
+ifeq ($(LBITS),64)
+$(MAKE_TARGET64): $(OBJECTS_ALL64)
+	@$(call printmessage,link,Linking, $(APP_NAME))
+	$(at)$(LD64) $(LDFLAGS64) \
+          $(OBJECTS_ALL64) \
+          -lc -lstdc++ -lm -ludev \
+          -o $@
+	@echo "Output binary:" ; echo "  $(APP_NAME)"
+endif
+
 #-------------------------------------------------------------------------------
 # Clean
 #-------------------------------------------------------------------------------
 .PHONY: clean cleanall
 cleanall: clean
 clean:
-	$(at)rm -rf $(TARGET_OUTPUT_ROOT)
+	$(at)rm -rf $(TARGET_OUTPUT_ROOT) $(TARGET_OUTPUT_ROOT64)
 	$(at)find . -name "*~" -print0 | xargs -0 rm -rf
 	
 
