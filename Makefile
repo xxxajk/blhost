@@ -19,14 +19,56 @@ APP_NAME = blhost
 # Release by default
 #-----------------------------------------------
 build ?= release
+LBITS ?= $(shell getconf LONG_BIT)
 
 include ./common.mk
 
+ifeq "$(build)" "debug"
+DEBUG_OR_RELEASE := Debug
+CFLAGS64 += -g
+CXXFLAGS64 += -g
+LDFLAGS64 += -g
+CFLAGS += -g
+CXXFLAGS += -g
+LDFLAGS += -g
+else
+DEBUG_OR_RELEASE := Release
+endif
+
+LLIBS = -lc -lstdc++ -lm -lrt -ludev -lpthread
+
+ifeq ($(LBITS),64)
+CXXFLAGS += -D LINUX -D BOOTLOADER_HOST -std=c++0x -m32
+CFLAGS   += -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE -m32
+LD       := g++ -m32
+CXXFLAGS64 += -D LINUX -D BOOTLOADER_HOST -std=c++0x
+CFLAGS64   += -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE
+LD64       := g++
+TARGET_OUTPUT_ROOT := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)-32bit
+MAKE_TARGET := $(TARGET_OUTPUT_ROOT)/$(APP_NAME)
+OBJS_ROOT = $(TARGET_OUTPUT_ROOT)/obj
+TARGET_OUTPUT_ROOT64 := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)-64bit
+MAKE_TARGET64 := $(TARGET_OUTPUT_ROOT64)/$(APP_NAME)
+OBJS_ROOT64= $(TARGET_OUTPUT_ROOT64)/obj
+else
+CXXFLAGS += -D LINUX -D BOOTLOADER_HOST -std=c++0x
+CFLAGS   += -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE
+LD       := g++
+TARGET_OUTPUT_ROOT := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)
+MAKE_TARGET := $(TARGET_OUTPUT_ROOT)/$(APP_NAME)
+OBJS_ROOT = $(TARGET_OUTPUT_ROOT)/obj
+endif
+
+
+ifeq "$(extra)" "y"
+LDFLAGS64 += '-Wl,-rpath,$$ORIGIN'
+LDFLAGS += '-Wl,-rpath,$$ORIGIN'
+endif
 #-----------------------------------------------
 # Include path. Add the include paths like this:
-# INCLUDES += ./include/
+# INCLUDES_ += $(BOOT_ROOT)/include/foo
 #-----------------------------------------------
-INCLUDES += $(BOOT_ROOT)/src \
+INCLUDES_ += $(BOOT_ROOT)/src \
 			$(BOOT_ROOT)/include \
 			$(BOOT_ROOT)/include/blfwk \
 			$(BOOT_ROOT)/include/sbloader \
@@ -37,22 +79,13 @@ INCLUDES += $(BOOT_ROOT)/src \
 			$(BOOT_ROOT)/include/driver \
 			$(BOOT_ROOT)/include/bm_usb
 
+INCLUDES := $(foreach includes, $(INCLUDES_), -I $(includes))
 
-LBITS := $(shell getconf LONG_BIT)
-ifeq ($(LBITS),64)
-CXXFLAGS := -D LINUX -D BOOTLOADER_HOST -std=c++0x -m32
-CFLAGS   := -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE -m32
-LD       := g++ -m32
-CXXFLAGS64 := -D LINUX -D BOOTLOADER_HOST -std=c++0x
-CFLAGS64   := -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE
-LD64       := g++
-else
-CXXFLAGS := -D LINUX -D BOOTLOADER_HOST -std=c++0x
-CFLAGS   := -std=c99 -D LINUX -D BOOTLOADER_HOST -D _GNU_SOURCE
-LD       := g++      
-endif
-
-SOURCES := $(BOOT_ROOT)/src/blhost.cpp \
+#-----------------------------------------------
+# SOURCES. Add the include paths like this:
+# SOURCES += $(BOOT_ROOT)/src/foo
+#-----------------------------------------------
+SOURCES += $(BOOT_ROOT)/src/blhost.cpp \
 		   $(BOOT_ROOT)/src/blfwk/Blob.cpp \
 		   $(BOOT_ROOT)/src/blfwk/Bootloader.cpp \
 		   $(BOOT_ROOT)/src/blfwk/BusPal.cpp \
@@ -89,33 +122,6 @@ SOURCES := $(BOOT_ROOT)/src/blhost.cpp \
 		   $(BOOT_ROOT)/src/blfwk/Value.cpp \
 		   $(BOOT_ROOT)/src/crc/crc16.c \
 		   $(BOOT_ROOT)/src/crc/crc32.c
-
-INCLUDES := $(foreach includes, $(INCLUDES), -I $(includes))
-
-ifeq "$(build)" "debug"
-DEBUG_OR_RELEASE := Debug
-CFLAGS64 += -g
-CXXFLAGS64 += -g
-LDFLAGS64 += -g
-CFLAGS += -g
-CXXFLAGS += -g
-LDFLAGS += -g
-else
-DEBUG_OR_RELEASE := Release
-endif
-
-ifeq ($(LBITS),64)
-TARGET_OUTPUT_ROOT := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)-32bit
-MAKE_TARGET := $(TARGET_OUTPUT_ROOT)/$(APP_NAME)
-OBJS_ROOT = $(TARGET_OUTPUT_ROOT)/obj
-TARGET_OUTPUT_ROOT64 := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)-64bit
-MAKE_TARGET64 := $(TARGET_OUTPUT_ROOT64)/$(APP_NAME)
-OBJS_ROOT64= $(TARGET_OUTPUT_ROOT64)/obj
-else
-TARGET_OUTPUT_ROOT := $(OUTPUT_ROOT)/$(DEBUG_OR_RELEASE)
-MAKE_TARGET := $(TARGET_OUTPUT_ROOT)/$(APP_NAME)
-OBJS_ROOT = $(TARGET_OUTPUT_ROOT)/obj
-endif
 
 # Strip sources.
 SOURCES := $(strip $(SOURCES))
@@ -191,6 +197,7 @@ $(OBJECTS_ALL) $(OBJECTS_ALL64): | $(OBJECTS_DIRS) $(OBJECTS_DIRS64)
 # If system headers are included, there are path problems on cygwin. The -MP option creates empty
 # targets for each header file so that a rebuild will be forced if the file goes missing, but
 # no error will occur.
+
 ifeq ($(LBITS),64)
 # Compile C sources.
 $(OBJS_ROOT64)/%.o: $(BOOT_ROOT)/%.c
@@ -247,8 +254,9 @@ $(MAKE_TARGET): $(OBJECTS_ALL)
 	@$(call printmessage,link,Linking, $(APP_NAME))
 	$(at)$(LD) $(LDFLAGS) \
           $(OBJECTS_ALL) \
-          -lc -lstdc++ -lm -ludev \
+          $(LLIBS) \
           -o $@
+	for i in `ldd $(MAKE_TARGET) | grep "=" | cut -f2- -d">" | cut -f2 -d" "` ; do { cp $$i $(TARGET_OUTPUT_ROOT); } ; done
 	@echo "Output binary:" ; echo "  $(APP_NAME)"
 
 ifeq ($(LBITS),64)
@@ -256,8 +264,9 @@ $(MAKE_TARGET64): $(OBJECTS_ALL64)
 	@$(call printmessage,link,Linking, $(APP_NAME))
 	$(at)$(LD64) $(LDFLAGS64) \
           $(OBJECTS_ALL64) \
-          -lc -lstdc++ -lm -ludev \
+          $(LLIBS) \
           -o $@
+	# for i in `ldd $(MAKE_TARGET64) | grep "=" | cut -f2- -d">" | cut -f2 -d" "` ; do { cp $$i $(TARGET_OUTPUT_ROOT); } ; done
 	@echo "Output binary:" ; echo "  $(APP_NAME)"
 endif
 
